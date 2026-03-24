@@ -3,122 +3,137 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EDI Auditor | Pro</title>
+    <title>EDI Control | Debug Mode</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.3); }
-        .custom-scroll::-webkit-scrollbar { width: 4px; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .tab-row:hover { background-color: #f8fafc; }
     </style>
 </head>
-<body class="bg-[#f8fafc] text-slate-900 overflow-hidden">
+<body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState } = React;
+        const { useState, useEffect } = React;
 
-        const SPECS = {
+        // --- HARDCODED SPECS (Ensures no data retrieval errors) ---
+        const PARTNERS = {
             'tj_4030': {
-                name: "Trader Joe's (4030)",
-                rules: {
-                    'ST': { req: true, e: { 1: ['850'] } },
-                    'BEG': { req: true, e: { 1: ['00'], 2: ['NE', 'SA'], 3: 'REQ' } },
-                    'CUR': { req: false, e: { 2: ['USD', 'CAD'] } },
-                    'DTM': { req: true, e: { 1: ['002'] } },
-                    'N1': { req: true, e: { 1: ['ST', 'BT', 'VN'] } },
-                    'PO1': { req: true, e: { 2: 'REQ', 4: 'REQ' } }
+                name: "Trader Joe's 4030",
+                mandatory: ['ST', 'BEG', 'DTM', 'N1', 'PO1', 'CTT', 'SE'],
+                elements: {
+                    'ST': { 1: ['850'] },
+                    'BEG': { 1: ['00'], 2: ['NE', 'SA', 'DS'] },
+                    'DTM': { 1: ['002'] }
                 }
             },
             'wfm_4010': {
-                name: "Whole Foods (4010)",
-                rules: {
-                    'ST': { req: true, e: { 1: ['850'] } },
-                    'BEG': { req: true, e: { 2: ['NE'] } },
-                    'PO1': { req: true, e: { 7: ['UP', 'VC'] } }
+                name: "Whole Foods 4010",
+                mandatory: ['ST', 'BEG', 'N1', 'PO1', 'SE'],
+                elements: {
+                    'BEG': { 2: ['NE'] }
                 }
             }
         };
 
         const App = () => {
-            const [partner, setPartner] = useState('tj_4030');
-            const [input, setInput] = useState('');
-            const [results, setResults] = useState(null);
+            const [selectedId, setSelectedId] = useState('tj_4030');
+            const [rawEdi, setRawEdi] = useState('');
+            const [audit, setAudit] = useState(null);
             const [modal, setModal] = useState(false);
-            const [fileName, setFileName] = useState('');
 
-            const analyze = () => {
-                if (!input.trim()) return;
-                const segments = input.split('~').map(s => s.trim()).filter(Boolean);
-                const spec = SPECS[partner].rules;
-                let errs = 0, warns = 0;
+            const runCheck = () => {
+                console.log("Starting Audit...");
+                try {
+                    const segments = rawEdi.split('~').map(s => s.trim()).filter(Boolean);
+                    const spec = PARTNERS[selectedId];
+                    let errCount = 0;
+                    let warnCount = 0;
+                    const foundTags = new Set();
 
-                const data = segments.map((raw, i) => {
-                    const el = raw.split('*');
-                    const tag = el[0];
-                    let status = 'pass', msgs = [];
-                    const rule = spec[tag];
+                    const rows = segments.map((raw, idx) => {
+                        const el = raw.split('*');
+                        const tag = el[0];
+                        foundTags.add(tag);
+                        
+                        let status = 'pass';
+                        let notes = [];
 
-                    if (rule && rule.e) {
-                        Object.entries(rule.e).forEach(([pos, v]) => {
-                            const val = el[parseInt(pos)];
-                            if (v === 'REQ' && !val) { status = 'error'; msgs.push(`Missing mandatory element ${tag}${pos.padStart(2,'0')}`); errs++; }
-                            else if (Array.isArray(v) && !v.includes(val)) { status = 'warning'; msgs.push(`Invalid code: ${val}`); warns++; }
-                        });
-                    }
-                    return { tag, raw, status, msgs };
-                });
+                        if (spec.elements[tag]) {
+                            Object.entries(spec.elements[tag]).forEach(([pos, valid]) => {
+                                const actual = el[parseInt(pos)];
+                                if (Array.isArray(valid) && !valid.includes(actual)) {
+                                    status = 'warning';
+                                    notes.push(`Invalid Code: ${actual}`);
+                                    warnCount++;
+                                }
+                            });
+                        }
+                        return { id: idx, tag, raw, status, notes };
+                    });
 
-                setResults({ segments: data, stats: { total: segments.length, errs, warns } });
+                    // Sequence/Mandatory Check
+                    spec.mandatory.forEach(mTag => {
+                        if (!foundTags.has(mTag)) {
+                            errCount++;
+                            rows.unshift({ tag: 'MISSING', raw: `Segment ${mTag} is required.`, status: 'error', notes: [`Mandatory Segment Missing`] });
+                        }
+                    });
+
+                    setAudit({ rows, stats: { total: segments.length, errors: errCount, warnings: warnCount } });
+                } catch (e) {
+                    console.error("Audit Failed:", e);
+                    alert("Error processing EDI: " + e.message);
+                }
             };
 
             return (
-                <div className="flex h-screen w-full">
+                <div className="flex h-screen w-full overflow-hidden">
                     {/* Sidebar */}
-                    <aside className="w-64 bg-slate-900 p-6 flex flex-col shrink-0">
-                        <div className="flex items-center gap-3 text-white mb-10">
-                            <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center font-bold text-xs">EDI</div>
-                            <span className="font-bold tracking-tight">Compliance v1</span>
+                    <nav className="w-64 bg-slate-900 p-6 flex flex-col shrink-0 text-white">
+                        <div className="mb-10 flex items-center gap-2">
+                            <div className="h-8 w-8 bg-blue-600 rounded flex items-center justify-center font-black">E</div>
+                            <span className="font-bold uppercase tracking-wider text-sm">EDI Auditor</span>
                         </div>
-                        <nav className="flex-1 space-y-2">
-                            <button className="w-full text-left px-4 py-3 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-lg">🛡️ Auditor</button>
-                        </nav>
-                        <button onClick={() => setModal(true)} className="w-full py-4 rounded-xl border border-slate-700 text-slate-400 text-xs font-bold hover:bg-slate-800">➕ New Partner</button>
-                    </aside>
+                        <div className="flex-1 space-y-2">
+                            <div className="bg-blue-600/20 text-blue-400 p-3 rounded-lg text-xs font-bold border border-blue-600/30">Dashboard</div>
+                        </div>
+                        <button onClick={() => setModal(true)} className="p-4 border border-slate-700 rounded-xl text-xs font-bold hover:bg-slate-800 transition-all">+ New Partner</button>
+                    </nav>
 
-                    {/* Content */}
-                    <main className="flex-1 flex flex-col overflow-hidden">
-                        <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between">
-                            <h2 className="font-extrabold text-slate-700 text-sm uppercase tracking-wider">Validation Console</h2>
-                            <div className="flex gap-3">
-                                <select value={partner} onChange={e => setPartner(e.target.value)} className="bg-slate-100 border-none rounded-lg text-xs font-bold p-2 px-4 outline-none">
-                                    <option value="tj_4030">Trader Joe's 4030</option>
-                                    <option value="wfm_4010">Whole Foods 4010</option>
+                    {/* Main Area */}
+                    <main className="flex-1 flex flex-col">
+                        <header className="h-16 bg-white border-b flex items-center justify-between px-8 shrink-0">
+                            <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">Compliance Workspace</h2>
+                            <div className="flex gap-4">
+                                <select value={selectedId} onChange={e => setSelectedId(e.target.value)} className="text-xs font-bold bg-slate-100 p-2 rounded-lg border-none outline-none">
+                                    <option value="tj_4030">Trader Joe's 850</option>
+                                    <option value="wfm_4010">Whole Foods 850</option>
                                 </select>
-                                <button onClick={analyze} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-xs font-bold shadow-lg shadow-blue-200 hover:bg-blue-700">RUN AUDIT</button>
+                                <button onClick={runCheck} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-xs font-bold shadow-lg hover:bg-blue-700">RUN CHECK</button>
                             </div>
                         </header>
 
-                        <div className="flex-1 p-8 overflow-y-auto custom-scroll">
+                        <div className="flex-1 p-8 overflow-auto">
                             <div className="max-w-5xl mx-auto space-y-6">
-                                {/* Dashboard */}
-                                {results && (
-                                    <div className="grid grid-cols-3 gap-4">
-                                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase">Segments</p>
-                                            <p className="text-2xl font-black">{results.stats.total}</p>
+                                {/* Summary Cards */}
+                                {audit && (
+                                    <div className="grid grid-cols-3 gap-6">
+                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                                            <p className="text-[10px] font-black text-slate-400 uppercase">Segments</p>
+                                            <p className="text-2xl font-black">{audit.stats.total}</p>
                                         </div>
-                                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm ring-1 ring-red-100">
-                                            <p className="text-[10px] font-bold text-red-400 uppercase">Errors</p>
-                                            <p className="text-2xl font-black text-red-600">{results.stats.errs}</p>
+                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-red-100">
+                                            <p className="text-[10px] font-black text-red-400 uppercase">Errors</p>
+                                            <p className="text-2xl font-black text-red-600">{audit.stats.errors}</p>
                                         </div>
-                                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                            <p className="text-[10px] font-bold text-amber-500 uppercase">Warnings</p>
-                                            <p className="text-2xl font-black text-amber-600">{results.stats.warns}</p>
+                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-amber-100">
+                                            <p className="text-[10px] font-black text-amber-500 uppercase">Warnings</p>
+                                            <p className="text-2xl font-black text-amber-600">{audit.stats.warnings}</p>
                                         </div>
                                     </div>
                                 )}
@@ -126,30 +141,30 @@
                                 <div className="grid grid-cols-3 gap-6">
                                     <div className="col-span-1">
                                         <textarea 
-                                            value={input} onChange={e => setInput(e.target.value)}
-                                            className="w-full h-80 bg-white border border-slate-200 rounded-2xl p-4 text-[11px] font-mono outline-none shadow-sm focus:ring-2 focus:ring-blue-100"
+                                            value={rawEdi} onChange={e => setRawEdi(e.target.value)}
+                                            className="w-full h-80 bg-white border border-slate-200 rounded-2xl p-4 text-[10px] font-mono outline-none shadow-sm focus:ring-2 focus:ring-blue-50"
                                             placeholder="Paste ISA segment here..."
-                                        ></textarea>
+                                        />
                                     </div>
                                     <div className="col-span-2">
-                                        {results ? (
-                                            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-                                                <table className="w-full text-left border-collapse">
-                                                    <thead className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase">
+                                        {audit ? (
+                                            <div className="bg-white border rounded-2xl overflow-hidden shadow-sm">
+                                                <table className="w-full text-left text-[11px]">
+                                                    <thead className="bg-slate-50 font-black text-slate-400 uppercase text-[9px]">
                                                         <tr>
-                                                            <th className="p-4 w-12">St</th>
-                                                            <th className="p-4 w-20">Tag</th>
-                                                            <th className="p-4">Analysis</th>
+                                                            <th className="p-4 w-12 text-center">Status</th>
+                                                            <th className="p-4 w-16">Tag</th>
+                                                            <th className="p-4">Findings & Data</th>
                                                         </tr>
                                                     </thead>
-                                                    <tbody className="divide-y divide-slate-100 font-mono text-[10px]">
-                                                        {results.segments.map((s, i) => (
-                                                            <tr key={i} className="hover:bg-slate-50">
-                                                                <td className="p-4 text-center">{s.status === 'pass' ? '✅' : s.status === 'error' ? '❌' : '⚠️'}</td>
-                                                                <td className="p-4 font-bold text-slate-600">{s.tag}</td>
-                                                                <td className="p-4 leading-relaxed">
-                                                                    {s.msgs.map((m, mi) => <p key={mi} className="text-red-500 font-bold mb-1">{m}</p>)}
-                                                                    <span className="text-slate-400 opacity-60">{s.raw}</span>
+                                                    <tbody className="divide-y divide-slate-100 font-mono">
+                                                        {audit.rows.map((r, i) => (
+                                                            <tr key={i} className="tab-row">
+                                                                <td className="p-4 text-center">{r.status === 'pass' ? '✅' : r.status === 'error' ? '❌' : '⚠️'}</td>
+                                                                <td className="p-4 font-black">{r.tag}</td>
+                                                                <td className="p-4">
+                                                                    {r.notes.map((n, ni) => <div key={ni} className="text-red-500 font-bold mb-1">{n}</div>)}
+                                                                    <div className="text-slate-400 opacity-60 truncate">{r.raw}</div>
                                                                 </td>
                                                             </tr>
                                                         ))}
@@ -157,9 +172,8 @@
                                                 </table>
                                             </div>
                                         ) : (
-                                            <div className="h-64 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-slate-400">
-                                                <p className="text-sm font-medium">No Data Processed</p>
-                                                <p className="text-[10px]">Paste EDI string and click Run Audit</p>
+                                            <div className="h-64 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-slate-400 text-xs italic">
+                                                Waiting for EDI input...
                                             </div>
                                         )}
                                     </div>
@@ -168,26 +182,26 @@
                         </div>
                     </main>
 
-                    {/* Modal */}
+                    {/* Browse/Modal */}
                     {modal && (
-                        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-6 z-50">
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 z-50">
                             <div className="bg-white rounded-3xl w-full max-w-sm p-8 shadow-2xl relative">
-                                <button onClick={() => setModal(false)} className="absolute top-4 right-4 text-slate-300 hover:text-slate-600">✕</button>
-                                <h3 className="text-xl font-bold mb-6">Onboard Partner</h3>
+                                <button onClick={() => setModal(false)} className="absolute top-4 right-4 text-slate-300 hover:text-slate-900">✕</button>
+                                <h3 className="text-xl font-black mb-6">Add Partner</h3>
                                 <div className="space-y-6">
                                     <div>
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">Company</label>
-                                        <input type="text" className="w-full bg-slate-50 border-none rounded-xl p-4 text-sm font-bold outline-none ring-1 ring-slate-100 focus:ring-2 focus:ring-blue-400" placeholder="e.g. Amazon" />
+                                        <label className="text-[10px] font-black text-slate-400 uppercase block mb-2 tracking-widest">Name</label>
+                                        <input type="text" className="w-full bg-slate-50 border-none rounded-xl p-4 text-xs font-bold outline-none" placeholder="Target, Amazon, etc." />
                                     </div>
                                     <div>
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">Spec PDF</label>
-                                        <label className="w-full border-2 border-dashed border-slate-100 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50">
-                                            <input type="file" className="hidden" onChange={e => setFileName(e.target.files[0]?.name)} />
-                                            <span className="text-xl mb-2">📄</span>
-                                            <p className="text-[10px] font-bold text-slate-500">{fileName || 'Browse Files'}</p>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase block mb-2 tracking-widest">Spec PDF</label>
+                                        <label className="w-full border-2 border-dashed border-slate-100 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 transition-colors">
+                                            <input type="file" className="hidden" />
+                                            <span className="text-xl mb-1">📁</span>
+                                            <span className="text-[10px] font-bold text-slate-400 uppercase">Browse File</span>
                                         </label>
                                     </div>
-                                    <button onClick={() => setModal(false)} className="w-full bg-slate-900 text-white py-4 rounded-xl text-xs font-bold">SAVE PARTNER</button>
+                                    <button onClick={() => setModal(false)} className="w-full bg-slate-900 text-white py-4 rounded-xl text-xs font-black shadow-xl">Save & Sync</button>
                                 </div>
                             </div>
                         </div>
