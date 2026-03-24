@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EDI Control | Compliance Engine</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-slate-50 overflow-hidden">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+        
+        // --- Firebase Config Implementation ---
+        // Note: These global variables are provided by the hosting environment. 
+        // If deploying elsewhere, replace them with your stringified Firebase config object.
+        const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const appId = window.__app_id || 'default-edi-app';
+
+        // Initialize Firebase (via CDN imports would normally be here, 
+        // but we'll use a dynamic import pattern for the one-file mandate)
+        // For simplicity in this demo, we use a fallback for the UI logic.
+        
+        const INITIAL_PARTNER_PROFILES = {
+          'wfm_850_4010': {
+            id: 'wfm_850_4010',
+            name: "Whole Foods Market 850",
+            version: '4010',
+            docType: '850',
+            delimiters: { element: '*', segment: '~', sub: '>' },
+            rules: {
+              'ST': { mandatory: true, name: 'Transaction Set Header', elements: { '1': ['850'] } },
+              'BEG': { mandatory: true, name: 'Beginning Segment for PO', elements: { '1': ['00'], '2': ['NE', 'SA'], '3': 'REQUIRED' } },
+              'N1': { mandatory: true, name: 'Name (ST/BT)', elements: { '1': ['ST', 'BT'], '3': ['1', '9', '91', '92'], '4': 'REQUIRED' } },
+              'PO1': { mandatory: true, name: 'Item Data', elements: { '2': 'REQUIRED', '4': 'REQUIRED', '6': ['UP', 'VN'] } }
+            }
+          }
+        };
+
+        const App = () => {
+            const [currentPage, setCurrentPage] = useState('validator');
+            const [partner, setPartner] = useState('wfm_850_4010');
+            const [rawEdi, setRawEdi] = useState('');
+            const [results, setResults] = useState(null);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [newPartner, setNewPartner] = useState({ name: '', file: null });
+
+            const validateEDI = () => {
+                const segs = rawEdi.split('~').filter(s => s.trim());
+                const report = segs.map((s, i) => ({
+                    id: i,
+                    tag: s.split('*')[0],
+                    raw: s,
+                    status: s.includes('**') ? 'error' : 'pass',
+                    findings: s.includes('**') ? [{ type: 'error', msg: 'Empty element detected in mandatory field.' }] : []
+                }));
+                setResults({ segments: report, summary: { errors: report.filter(r => r.status === 'error').length, total: report.length } });
+            };
+
+            return (
+                <div className="flex h-screen w-screen bg-slate-50">
+                    {/* Sidebar */}
+                    <aside className="w-64 bg-slate-900 p-6 flex flex-col">
+                        <div className="flex items-center gap-2 text-white mb-10">
+                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-black">E</div>
+                            <span className="font-bold text-lg tracking-tight">EDI Control</span>
+                        </div>
+                        <nav className="space-y-2 flex-1">
+                            <button onClick={() => setCurrentPage('validator')} className={`w-full text-left px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 transition-all ${currentPage === 'validator' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                <i data-lucide="clipboard-check" className="w-4 h-4"></i> Compliance
+                            </button>
+                        </nav>
+                        <button onClick={() => setIsModalOpen(true)} className="w-full bg-blue-500/10 text-blue-400 border border-blue-500/20 p-4 rounded-2xl flex items-center justify-center gap-2 font-bold text-sm hover:bg-blue-500/20 transition-all">
+                            <i data-lucide="plus" className="w-4 h-4"></i> New Partner
+                        </button>
+                    </aside>
+
+                    {/* Main Content */}
+                    <main className="flex-1 flex flex-col overflow-hidden">
+                        <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between">
+                            <h1 className="text-sm font-black text-slate-800 uppercase tracking-widest">Global Validator</h1>
+                            <div className="flex items-center gap-4">
+                                <select className="bg-slate-100 border-none rounded-lg px-4 py-2 text-xs font-bold text-slate-600 outline-none">
+                                    <option>Whole Foods 850</option>
+                                    <option>Trader Joe's 850</option>
+                                </select>
+                                <button onClick={validateEDI} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200">Run Check</button>
+                            </div>
+                        </header>
+
+                        <div className="flex-1 p-8 overflow-auto flex flex-col gap-6">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="lg:col-span-1 bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Input Stream</h3>
+                                    <textarea 
+                                        className="w-full h-64 p-4 text-xs font-mono bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-100"
+                                        placeholder="ISA*00*...~"
+                                        value={rawEdi}
+                                        onChange={(e) => setRawEdi(e.target.value)}
+                                    ></textarea>
+                                </div>
+                                <div className="lg:col-span-2 space-y-4">
+                                    {results ? (
+                                        <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
+                                            <table className="w-full text-left">
+                                                <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase">
+                                                    <tr>
+                                                        <th className="p-4 w-16 text-center">Status</th>
+                                                        <th className="p-4 w-24">Segment</th>
+                                                        <th className="p-4">Content</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-50">
+                                                    {results.segments.map(seg => (
+                                                        <tr key={seg.id} className="text-[11px] font-mono hover:bg-slate-50">
+                                                            <td className="p-4 text-center">{seg.status === 'pass' ? '✅' : '❌'}</td>
+                                                            <td className="p-4 font-black">{seg.tag}</td>
+                                                            <td className="p-4 text-slate-500">{seg.raw}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        <div className="h-64 border-2 border-dashed border-slate-200 rounded-3xl flex items-center justify-center text-slate-400 font-medium italic">
+                                            Waiting for data...
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Modal */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+                            <div className="bg-white rounded-[40px] w-full max-w-md p-10 shadow-2xl relative">
+                                <button onClick={() => setIsModalOpen(false)} className="absolute top-8 right-8 text-slate-400 hover:text-slate-600"><i data-lucide="x" className="w-6 h-6"></i></button>
+                                <h2 className="text-2xl font-black text-slate-800 mb-2">Add Partner</h2>
+                                <p className="text-slate-400 text-sm mb-8">Onboard a new vendor by uploading their PDF spec.</p>
+                                
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Company Name</label>
+                                        <input type="text" className="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm font-bold outline-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-400" placeholder="e.g. Amazon" />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Mapping Spec (PDF)</label>
+                                        <div className="w-full border-2 border-dashed border-slate-200 rounded-2xl p-10 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-all cursor-pointer">
+                                            <i data-lucide="file-up" className="w-10 h-10 text-slate-300 mb-4"></i>
+                                            <p className="text-xs font-bold text-slate-500">Upload PDF</p>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setIsModalOpen(false)} className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all">Save to Database</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+        // Refresh icons after render
+        setTimeout(() => lucide.createIcons(), 100);
+    </script>
+</body>
+</html>
